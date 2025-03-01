@@ -19,8 +19,8 @@ parser.add_argument("--inference_data", default="./REDS/val/val_sharp", type=str
                     help="Path to inference data to be loaded.")
 parser.add_argument("--data_parallel", default=False, action="store_true",
                     help="Binary flag. If multi GPU training should be utilized set flag.")
-# parser.add_argument("--load_model", default="", type=str,
-parser.add_argument("--load_model", default="./saved_data/generator_network_model_59.pt", type=str,
+parser.add_argument("--load_model", default="", type=str,
+# parser.add_argument("--load_model", default="./saved_data/generator_network_model_25.pt", type=str,
 # parser.add_argument("--load_model", default="./saved_data/tmp.pt", type=str,
                     help="Path to model to be loaded.")
 # the number of input features.
@@ -55,8 +55,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from model import RecurrentUNet1
-# from model_pconv import RecurrentUNet1
+# from model import RecurrentUNet1
+from model_pconv import RecurrentUNet1
 # from model import NSRRModel
 # from discriminator import Discriminator, FFTDiscriminator
 from vgg_19 import VGG19
@@ -116,13 +116,13 @@ if __name__ == '__main__':
                                     # Bistro_faster1 Square_fast
                                     #  REDSFovea(path='./pica/train/train_sharp', batch_size=1,
                                     #  REDSFovea(path='../Bistro_low/train', batch_size=1,
-                                     REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_cur/valid'),
+                                     REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_cur/train'),
                                                batch_size=batch_size, shuffle=True, num_workers=20),  # b=2
                                 #  validation_dataloader=None, 
                                  validation_dataloader=DataLoader(
                                     #  REDSFovea(path='./pica/val/val_sharp', batch_size=1,
                                     #  REDSFovea(path='../Bistro_low/valid', batch_size=1,
-                                     REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_label/full_pica'),
+                                     REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_cur/valid'),
                                                batch_size=1, shuffle=False,num_workers=20),
                                  validation_dataloader_1=DataLoader(
                                     #  REDSFovea(path='./pica/val/val_sharp', batch_size=1,
@@ -144,8 +144,8 @@ if __name__ == '__main__':
         model_wrapper.train(epochs=epochs)#20
     # Perform final validation
     if args.val:
-        model_wrapper.validate(epoch = 0, plot_after_n_iterations = 1)
-        # model_wrapper.validate_1(epoch = 1, plot_after_n_iterations = 1)
+        model_wrapper.validate(epoch = 0, plot_after_n_iterations = 10)
+        model_wrapper.validate_1(epoch = 0, plot_after_n_iterations = 10)
     # Perform testing
     if args.test:
         model_wrapper.test()

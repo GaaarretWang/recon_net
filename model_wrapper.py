@@ -479,12 +479,12 @@ class ModelWrapper(object):
                                     'prediction_warp_{}_{}.exr'.format(epoch,index_sequence)),
                     format='exr',
                     nrow=self.validation_dataloader.dataset.number_of_frames)                  
-                save_image(
-                    label_image,
-                    fp=os.path.join(self.path_save_plots,
-                                    'label_image_{}_{}.exr'.format(epoch,index_sequence)),
-                    format='exr',
-                    nrow=self.validation_dataloader.dataset.number_of_frames)                  
+                # save_image(
+                #     label_image,
+                #     fp=os.path.join(self.path_save_plots,
+                #                     'label_image_{}_{}.exr'.format(epoch,index_sequence)),
+                #     format='exr',
+                #     nrow=self.validation_dataloader.dataset.number_of_frames)                  
                 # save_image(
                 #     sample_time_input,
                 #     fp=os.path.join(self.path_save_plots,

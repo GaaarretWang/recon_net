@@ -27,7 +27,7 @@ class REDS(Dataset):
     """
 
     def __init__(self, path: str = '../mixdataset/pictures/train', exclude_data: str = "", 
-                 number_of_frames: int = 6) -> None:
+                 number_of_frames: int = 7) -> None:
         """
         Constructor method
         :param path: (str) Path to data
@@ -87,37 +87,37 @@ class REDS(Dataset):
         :return: (Tuple[torch.Tensor, torch.Tensor]) Low res sequence, high res sequence, new video flag
         """
         # Check if current frame sequence is a new video sequence
-        if self.previously_loaded_frames is None or self.previously_loaded_frames[0].split('/')[-2] != \
-                self.data_path[item][0].split('/')[-2]:
-            new_video = True
-        else:
-            new_video = False
-        # Set current data path to previously loaded frames
-        self.previously_loaded_frames = self.data_path[item]
-        # Load frames
-        frames_low_res = []
-        frames_label = []
-        for frame in self.data_path[item]:#遍历一个序列之内的所有帧
-            # Load images as PIL image, and convert to tensor
-            image = tf.to_tensor(Image.open(frame))
-            # Normalize image to a mean of zero and a std of one
-            # image = image.sub_(image.mean()).div_(image.std())
-            # Downsampled frames
-            image_low_res = interpolate(image[None], scale_factor=0.25, mode='bilinear', align_corners=False)[0]#720*1280 / 4=180*320
-            # Crop normal image
-            image = image[:, :, 128:-128]#720*1024
-            image = pad(image[None], pad=[0, 0, 24, 24], mode="constant", value=0)[0]#上下填充24 768*1024
-            # Crop low res masked image
-            image_low_res = image_low_res[:, :, 32:-32]
-            image_low_res = pad(image_low_res[None], pad=[0, 0, 6, 6], mode="constant", value=0)[0]
-            # Add to list
-            frames_low_res.append(image_low_res)
-            # Add to list
-            frames_label.append(image)
-        # Concatenate frames to tensor of shape (3 * number of frames, height (/ 4), width (/ 4))
-        frames_low_res = torch.cat(frames_low_res, dim=0)
-        frames_label = torch.cat(frames_label, dim=0)
-        return frames_low_res, frames_label, new_video
+        # if self.previously_loaded_frames is None or self.previously_loaded_frames[0].split('/')[-2] != \
+        #         self.data_path[item][0].split('/')[-2]:
+        #     new_video = True
+        # else:
+        #     new_video = False
+        # # Set current data path to previously loaded frames
+        # self.previously_loaded_frames = self.data_path[item]
+        # # Load frames
+        # frames_low_res = []
+        # frames_label = []
+        # for frame in self.data_path[item]:#遍历一个序列之内的所有帧
+        #     # Load images as PIL image, and convert to tensor
+        #     image = tf.to_tensor(Image.open(frame))
+        #     # Normalize image to a mean of zero and a std of one
+        #     # image = image.sub_(image.mean()).div_(image.std())
+        #     # Downsampled frames
+        #     image_low_res = interpolate(image[None], scale_factor=0.25, mode='bilinear', align_corners=False)[0]#720*1280 / 4=180*320
+        #     # Crop normal image
+        #     image = image[:, :, 128:-128]#720*1024
+        #     image = pad(image[None], pad=[0, 0, 24, 24], mode="constant", value=0)[0]#上下填充24 768*1024
+        #     # Crop low res masked image
+        #     image_low_res = image_low_res[:, :, 32:-32]
+        #     image_low_res = pad(image_low_res[None], pad=[0, 0, 6, 6], mode="constant", value=0)[0]
+        #     # Add to list
+        #     frames_low_res.append(image_low_res)
+        #     # Add to list
+        #     frames_label.append(image)
+        # # Concatenate frames to tensor of shape (3 * number of frames, height (/ 4), width (/ 4))
+        # frames_low_res = torch.cat(frames_low_res, dim=0)
+        # frames_label = torch.cat(frames_label, dim=0)
+        # return frames_low_res, frames_label, new_video
 
 
 class REDSFovea(REDS):
@@ -126,7 +126,7 @@ class REDSFovea(REDS):
     """
 
     def __init__(self, path='../mixdataset/pictures/train', exclude_data: str = "",
-                 number_of_frames: int = 6) -> None:
+                 number_of_frames: int = 7) -> None:
         """
         Constructor method
         :param path: (str) Path to data
@@ -165,21 +165,20 @@ class REDSFovea(REDS):
                 # albedo = torch.tensor(0)
                 exr_image = getEXR(frame)#h w c
                 cur_color = torch.from_numpy(exr_image).permute(2,0,1)#c h w 1920*1080->320*180
-            if index == 3:#sample_time_input
+            if index == 4:#sample_time_input
                 exr_image = cv2.imread(frame, cv2.IMREAD_UNCHANGED)
                 projected_sample_time = torch.from_numpy(exr_image).permute(2,0,1)[:1, :, :]
-            if index == 4:#sample_time_input
+            if index == 5:#sample_time_input
                 exr_image = cv2.imread(frame, cv2.IMREAD_UNCHANGED)
                 cur_sample_time = torch.from_numpy(exr_image).permute(2,0,1)[:1, :, :]
                 # sample_time_input = torch.zeros(sample_time_input.shape)
-            if index == 5:#img
+            if index == 6:#img
                 with open(frame, 'r') as infile:  
                     gaze_point = torch.from_numpy(np.loadtxt(infile))  # data = array([0.5 , 1.75])              index = index + 1
             index = index + 1
         # gaze_point = AngularCoord2ScreenCoord(gaze_point, [label_image.shape[2], label_image.shape[1]])
         # label_albedo *= mask.float()  
         projected_sample_time = torch.where(projected_sample_time < 90, (90 - projected_sample_time) / 90.0, torch.tensor(0.0))  
-
         return projected_color, cur_color, projected_sample_time, cur_sample_time, label_image, gaze_point
 
 

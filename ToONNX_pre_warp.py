@@ -8,11 +8,11 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import deform_conv2d_onnx_exporter
 
-from model import RecurrentUNet1
+from model_pconv import RecurrentUNet1
 # from model import NSRRModel
 from torchvision.ops.deform_conv import DeformConv2d
 
-from model import RecurrentUNet1
+# from model import RecurrentUNet1
 # from model import NSRRModel
 # class Pre_Warp_RecurrentUNet(nn.Module):
 #     """
@@ -153,7 +153,7 @@ from model import RecurrentUNet1
 torch.cuda.amp.autocast()
 deform_conv2d_onnx_exporter.register_deform_conv2d_onnx_op()
 
-generator_network = nn.DataParallel(RecurrentUNet1(2560, 1440).cuda())
+generator_network = nn.DataParallel(RecurrentUNet1().cuda())
 # generator_network = torch.load("./saved_data/k4-k3/generator_network_model_2.pt")
 generator_network.eval()
 
@@ -163,7 +163,7 @@ dummy_input =(
     # torch.randn((1,3,1440,2560)).cuda(),
     torch.randn((1,3,1440,2560)).cuda(),
     torch.randn((1,3,1440,2560)).cuda(),
-    torch.randn((1,3,1440,2560)).cuda(),
+    torch.randn((1,1,1440,2560)).cuda(),
     torch.randn((1,1,1440,2560)).cuda(),
 )
 # deform_conv2d_onnx_exporter.register_deform_conv2d_onnx_op()
@@ -182,8 +182,9 @@ with torch.no_grad():
                   dummy_input,
                   'generator_network_2.onnx',
                   verbose=True,
-                  opset_version=12,
+                  opset_version=14,
+                #   dynamic_axes=None,
                   operator_export_type=torch.onnx.OperatorExportTypes.ONNX)
 print('finish')
 
-#trtexec --onnx=fovolnet_high.onnx --saveEngine=fovolnet_high.trt --device=2 --fp16
+#trtexec --onnx=generator_network_2.onnx --saveEngine=generator_network_2.trt --device=2 --fp16
