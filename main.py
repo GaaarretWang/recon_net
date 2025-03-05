@@ -116,19 +116,19 @@ if __name__ == '__main__':
                                     # Bistro_faster1 Square_fast
                                     #  REDSFovea(path='./pica/train/train_sharp', batch_size=1,
                                     #  REDSFovea(path='../Bistro_low/train', batch_size=1,
-                                     REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_cur/valid'),
-                                               batch_size=batch_size, shuffle=True, num_workers=20),  # b=2
+                                     REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_pred/valid'),
+                                               batch_size=batch_size, shuffle=True, num_workers=10),  # b=2
                                 #  validation_dataloader=None, 
                                  validation_dataloader=DataLoader(
                                     #  REDSFovea(path='./pica/val/val_sharp', batch_size=1,
                                     #  REDSFovea(path='../Bistro_low/valid', batch_size=1,
-                                     REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_label/full_pica'),
-                                               batch_size=1, shuffle=False,num_workers=20),
+                                     REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_label/full_valid'),
+                                               batch_size=1, shuffle=False,num_workers=10),
                                  validation_dataloader_1=DataLoader(
                                     #  REDSFovea(path='./pica/val/val_sharp', batch_size=1,
                                     #  REDSFovea(path='../Bistro_low/valid', batch_size=1,
                                      REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_pred/valid'),
-                                               batch_size=1, shuffle=False,num_workers=20),
+                                               batch_size=1, shuffle=False,num_workers=10),
                                  test_dataloader=None, 
                                 #  test_dataloader=DataLoader(
                                 #     #  REDSFovea(path='./pica/val/val_sharp', batch_size=1,

@@ -149,32 +149,35 @@ class PartialConv2d(nn.Conv2d):
         self.last_size = (None, None, None, None)
         self.update_mask = None
         self.mask_ratio = None
+        # self.bias = None
 
     def forward(self, input, mask_in=None):
-        assert len(input.shape) == 4
-        if mask_in is not None or self.last_size != tuple(input.shape):
-            self.last_size = tuple(input.shape)
-            with torch.no_grad():
-                if self.weight_maskCalculator.type() != input.type():
-                    self.weight_maskCalculator = self.weight_maskCalculator.to(input)
-                if self.weight_maskUpdater.type() != input.type():
-                    self.weight_maskUpdater = self.weight_maskUpdater.to(input)
-                mask = mask_in
-                self.calculate_mask = F.conv2d(mask, self.weight_maskCalculator, bias=None, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=1)
+        # assert len(input.shape) == 4
+        # if mask_in is not None or self.last_size != tuple(input.shape):
+        #     self.last_size = tuple(input.shape)
+        #     with torch.no_grad():
+        #         if self.weight_maskCalculator.type() != input.type():
+        #             self.weight_maskCalculator = self.weight_maskCalculator.to(input)
+        #         if self.weight_maskUpdater.type() != input.type():
+        #             self.weight_maskUpdater = self.weight_maskUpdater.to(input)
+        #         mask = mask_in
+                # self.calculate_mask = F.conv2d(mask, self.weight_maskCalculator, bias=None, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=1)
 
                 # for mixed precision training, change 1e-8 to 1e-6
-                self.mask_ratio = self.slide_winsize/(self.calculate_mask + 1e-8)
+                # self.mask_ratio = self.slide_winsize/(self.calculate_mask + 1e-8)
                 # self.mask_ratio = torch.max(self.update_mask)/(self.update_mask + 1e-8
-                self.update_mask = F.conv2d(mask, self.weight_maskUpdater, bias=None, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=1)
-                # self.update_mask = torch.clamp(self.update_mask, 0, 1)
-                self.update_mask = torch.sigmoid(self.update_mask)
-                self.update_01mask = torch.where(self.update_mask > 1e-8, 1, 0)
-                self.mask_ratio = torch.mul(self.mask_ratio, self.update_01mask)
-        raw_out = super(PartialConv2d, self).forward(torch.mul(input, mask) if mask_in is not None else input)
-        bias_view = self.bias.view(1, self.out_channels, 1, 1)
-        output = torch.mul(raw_out - bias_view, self.mask_ratio) + bias_view
-        output = torch.mul(output, self.update_01mask)
-        return output, self.update_mask
+        # update_mask = F.conv2d(mask_in, self.weight_maskUpdater, bias=None, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=1)
+        # self.update_mask = torch.clamp(self.update_mask, 0, 1)
+        # self.update_mask = torch.sigmoid(self.update_mask)
+        # # self.update_01mask = torch.where(self.update_mask > 1e-8, 1, 0)
+        # self.update_01mask = torch.sign(self.update_mask)
+        # self.mask_ratio = torch.mul(self.mask_ratio, self.update_01mask)
+        raw_out = super(PartialConv2d, self).forward(input)
+        # mask_out = super(PartialConv2d, self).forward(mask_in)
+        # bias_view = self.bias.view(1, self.out_channels, 1, 1)
+        # output = torch.mul(raw_out, self.mask_ratio)
+        # output = torch.mul(raw_out, self.update_01mask)
+        return raw_out, input
 
 class RecurrentUNet1(nn.Module):
     """
@@ -280,36 +283,36 @@ class Pre_Warp_RecurrentUNet(nn.Module):
         self.pool1 = nn.Conv2d(encoder_channels[0], encoder_channels[0], kernel_size=2, stride=2)  
 
         # Encoder block 2  
-        self.encoder2_1 = PartialConv2d(encoder_channels[0]+3, encoder_channels[1], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
+        self.encoder2_1 = PartialConv2d(encoder_channels[0]+6, encoder_channels[1], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
         self.encoder2_2 = PartialConv2d(encoder_channels[1], encoder_channels[1], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
         self.pool2 = nn.Conv2d(encoder_channels[1], encoder_channels[1], kernel_size=2, stride=2)  
 
         # Encoder block 3  
-        self.encoder3_1 = PartialConv2d(encoder_channels[1]+3, encoder_channels[2], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
+        self.encoder3_1 = PartialConv2d(encoder_channels[1]+6, encoder_channels[2], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
         self.encoder3_2 = PartialConv2d(encoder_channels[2], encoder_channels[2], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
         self.pool3 = nn.Conv2d(encoder_channels[2], encoder_channels[2], kernel_size=2, stride=2)  
 
         # Encoder block 4  
-        self.encoder4_1 = PartialConv2d(encoder_channels[2]+3, encoder_channels[3], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
+        self.encoder4_1 = PartialConv2d(encoder_channels[2]+6, encoder_channels[3], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
         self.encoder4_2 = PartialConv2d(encoder_channels[3], encoder_channels[3], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
         self.pool4 = nn.Conv2d(encoder_channels[3], encoder_channels[3], kernel_size=2, stride=2)  
 
         # Bottleneck  
-        self.bottleneck_1 = PartialConv2d(encoder_channels[3]+3, encoder_channels[4], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
+        self.bottleneck_1 = PartialConv2d(encoder_channels[3]+6, encoder_channels[4], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
         self.bottleneck_2 = PartialConv2d(encoder_channels[4], encoder_channels[4], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
 
         # Decoder blocks  
-        self.decoder4_1 = PartialConv2d(encoder_channels[4] + encoder_channels[3], decoder_channels[0], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
-        self.decoder4_2 = PartialConv2d(decoder_channels[0], decoder_channels[0], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
+        self.decoder4_1 = nn.Conv2d(encoder_channels[4] + encoder_channels[3]+6, decoder_channels[0], kernel_size=kernel_size, padding=1)
+        self.decoder4_2 = nn.Conv2d(decoder_channels[0], decoder_channels[0], kernel_size=kernel_size, padding=1)
 
-        self.decoder3_1 = PartialConv2d(decoder_channels[0] + encoder_channels[2], decoder_channels[1], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
-        self.decoder3_2 = PartialConv2d(decoder_channels[1], decoder_channels[1], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
+        self.decoder3_1 = nn.Conv2d(decoder_channels[0] + encoder_channels[2]+6, decoder_channels[1], kernel_size=kernel_size, padding=1)
+        self.decoder3_2 = nn.Conv2d(decoder_channels[1], decoder_channels[1], kernel_size=kernel_size, padding=1)
 
-        self.decoder2_1 = PartialConv2d(decoder_channels[1] + encoder_channels[1], decoder_channels[2], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
-        self.decoder2_2 = PartialConv2d(decoder_channels[2], decoder_channels[2], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
+        self.decoder2_1 = nn.Conv2d(decoder_channels[1] + encoder_channels[1]+6, decoder_channels[2], kernel_size=kernel_size, padding=1)
+        self.decoder2_2 = nn.Conv2d(decoder_channels[2], decoder_channels[2], kernel_size=kernel_size, padding=1)
 
-        self.decoder1_1 = PartialConv2d(decoder_channels[2] + encoder_channels[0], decoder_channels[3], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
-        self.decoder1_2 = PartialConv2d(decoder_channels[3], decoder_channels[3], kernel_size=kernel_size, padding=1, multi_channel=True, return_mask=True)
+        self.decoder1_1 = nn.Conv2d(decoder_channels[2] + encoder_channels[0]+6, decoder_channels[3], kernel_size=kernel_size, padding=1)
+        self.decoder1_2 = nn.Conv2d(decoder_channels[3], decoder_channels[3], kernel_size=kernel_size, padding=1)
 
         self.maxpool = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)  
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)  
@@ -345,7 +348,8 @@ class Pre_Warp_RecurrentUNet(nn.Module):
         # Perform two rounds of maxpooling on weights
         pooled_weights = self.maxpool(weights)
         upsampled_weights = nn.functional.interpolate(pooled_weights, scale_factor=2, mode='nearest')
-        result_features = torch.where(torch.eq(upsampled_weights, weights), features, torch.zeros_like(features).to('cuda'))
+        result_features = (torch.sign(weights - upsampled_weights + 1e-6) + 1) / 2 * features
+        # result_features = torch.where(torch.eq(upsampled_weights, weights), features, torch.zeros_like(features).to('cuda'))
         pooled_features = self.maxpool(result_features)
 
         return pooled_features, pooled_weights
@@ -357,52 +361,53 @@ class Pre_Warp_RecurrentUNet(nn.Module):
         :param label_albedo: Albedo label tensor.  
         :return: Output tensor.  
         """  
-        cur_color_2, cur_time_2 = self.maxpool_weights(cur_color, cur_time)
-        cur_color_4, cur_time_4 = self.maxpool_weights(cur_color_2, cur_time_2)
-        cur_color_8, cur_time_8 = self.maxpool_weights(cur_color_4, cur_time_4)
-        cur_color_16, cur_time_16 = self.maxpool_weights(cur_color_8, cur_time_8)
+        # cur_color_2, cur_time_2 = self.maxpool_weights(input_tensor, input_sample_time)
+        # cur_color_4, cur_time_4 = self.maxpool_weights(cur_color_2, cur_time_2)
+        # cur_color_8, cur_time_8 = self.maxpool_weights(cur_color_4, cur_time_4)
+        # cur_color_16, cur_time_16 = self.maxpool_weights(cur_color_8, cur_time_8)
         # input()
-        # cur_color_4 = self.maxpool(cur_color_2)
-        # cur_color_8 = self.maxpool(cur_color_4)
-        # cur_color_16 = self.maxpool(cur_color_8)
-        # cur_time_2 = self.maxpool(cur_time)
-        # cur_time_4 = self.maxpool(cur_time_2)
-        # cur_time_8 = self.maxpool(cur_time_4)
-        # cur_time_16 = self.maxpool(cur_time_8)
+        cur_color_2 = self.maxpool(input_tensor)
+        cur_color_4 = self.maxpool(cur_color_2)
+        cur_color_8 = self.maxpool(cur_color_4)
+        cur_color_16 = self.maxpool(cur_color_8)
+        cur_time_2 = self.maxpool(input_sample_time)
+        cur_time_4 = self.maxpool(cur_time_2)
+        cur_time_8 = self.maxpool(cur_time_4)
+        cur_time_16 = self.maxpool(cur_time_8)
 
         # Initial convolution  
         down1, down1_mask = self.initial_conv_1(input_tensor, mask_in=input_sample_time)  
         down1 = self.relu(down1)
         down1, down1_mask = self.initial_conv_2(down1, mask_in=down1_mask)  
         down1 = self.relu(down1)
-        down1_pooled, down2_mask = self.maxpool_weights(down1, down1_mask)
-        # down1_pooled = self.pool1(down1)  
-        # down2_mask = self.pool1(down1_mask)  
+        # down1_pooled, down2_mask = self.maxpool_weights(down1, down1_mask)
+        down1_pooled = self.pool1(down1)  
+        down2_mask = self.pool1(down1_mask)  
 
         # Encoder blocks  
         down2, down2_mask = self.encoder2_1(torch.cat((down1_pooled, cur_color_2), dim=1), mask_in=torch.cat((down2_mask, cur_time_2), dim=1))  
         down2 = self.relu(down2)
         down2, down2_mask = self.encoder2_2(down2, mask_in=down2_mask)  
         down2 = self.relu(down2)
-        down2_pooled, down3_mask = self.maxpool_weights(down2, down2_mask)
-        # down2_pooled = self.pool2(down2)  
-        # down3_mask = self.pool2(down2_mask)  
+        # down2_pooled, down3_mask = self.maxpool_weights(down2, down2_mask)
+        down2_pooled = self.pool2(down2)  
+        down3_mask = self.pool2(down2_mask)  
 
         down3, down3_mask = self.encoder3_1(torch.cat((down2_pooled, cur_color_4), dim=1), mask_in=torch.cat((down3_mask, cur_time_4), dim=1))  
         down3 = self.relu(down3)
         down3, down3_mask = self.encoder3_2(down3, mask_in=down3_mask)  
         down3 = self.relu(down3)
-        down3_pooled, down4_mask = self.maxpool_weights(down3, down3_mask)
-        # down3_pooled = self.pool3(down3)  
-        # down4_mask = self.pool3(down3_mask)  
+        # down3_pooled, down4_mask = self.maxpool_weights(down3, down3_mask)
+        down3_pooled = self.pool3(down3)  
+        down4_mask = self.pool3(down3_mask)  
 
         down4, down4_mask = self.encoder4_1(torch.cat((down3_pooled, cur_color_8), dim=1), mask_in=torch.cat((down4_mask, cur_time_8), dim=1))  
         down4 = self.relu(down4)
         down4, down4_mask = self.encoder4_2(down4, mask_in=down4_mask)  
         down4 = self.relu(down4)
-        down4_pooled, bottleneck_mask = self.maxpool_weights(down4, down4_mask)
-        # down4_pooled = self.pool4(down4)  
-        # bottleneck_mask = self.pool4(down4_mask)  
+        # down4_pooled, bottleneck_mask = self.maxpool_weights(down4, down4_mask)
+        down4_pooled = self.pool4(down4)  
+        bottleneck_mask = self.pool4(down4_mask)  
 
         # Bottleneck  
         bottleneck, bottleneck_mask = self.bottleneck_1(torch.cat((down4_pooled, cur_color_16), dim=1), mask_in=torch.cat((bottleneck_mask, cur_time_16), dim=1))
@@ -412,35 +417,31 @@ class Pre_Warp_RecurrentUNet(nn.Module):
 
         # Decoder blocks  
         up4 = self.upsample(bottleneck)  
-        up4_mask = self.upsample(bottleneck_mask)  
         # print("up4 shape:", up4.shape)  # Debugging print statement
         # print("_mask shape:", up4_mask.shape)  # Debugging print statement
         # print("down4 shape:", down4.shape)  # Debugging print statement
-        decode4_output, up4_mask = self.decoder4_1(torch.cat((up4, down4), dim=1), mask_in=torch.cat((up4_mask, down4_mask), dim=1))  
+        decode4_output = self.decoder4_1(torch.cat((up4, down4, cur_color_8), dim=1))  
         decode4_output = self.relu(decode4_output)
-        decode4_output, up4_mask = self.decoder4_2(decode4_output, mask_in=up4_mask)  
+        decode4_output = self.decoder4_2(decode4_output)  
         decode4_output = self.relu(decode4_output)
 
         up3 = self.upsample(decode4_output)  
-        up3_mask = self.upsample(up4_mask)  
-        decode5_output, up3_mask = self.decoder3_1(torch.cat((up3, down3), dim=1), mask_in=torch.cat((up3_mask, down3_mask), dim=1))  
+        decode5_output = self.decoder3_1(torch.cat((up3, down3, cur_color_4), dim=1))  
         decode5_output = self.relu(decode5_output)
-        decode5_output, up3_mask = self.decoder3_2(decode5_output, mask_in=up3_mask)  
+        decode5_output = self.decoder3_2(decode5_output)  
         decode5_output = self.relu(decode5_output)
 
         up2 = self.upsample(decode5_output)  
-        up2_mask = self.upsample(up3_mask)  
-        decode6_output, up2_mask = self.decoder2_1(torch.cat((up2, down2), dim=1), mask_in=torch.cat((up2_mask, down2_mask), dim=1))  
+        decode6_output = self.decoder2_1(torch.cat((up2, down2, cur_color_2), dim=1))  
         decode6_output = self.relu(decode6_output)
-        decode6_output, up2_mask = self.decoder2_2(decode6_output, mask_in=up2_mask)  
+        decode6_output = self.decoder2_2(decode6_output)  
         decode6_output = self.relu(decode6_output)
 
 
         up1 = self.upsample(decode6_output)  
-        up1_mask = self.upsample(up2_mask)  
-        decode7_output, up1_mask = self.decoder1_1(torch.cat((up1, down1), dim=1), mask_in=torch.cat((up1_mask, down1_mask), dim=1))  
+        decode7_output = self.decoder1_1(torch.cat((up1, down1, input_tensor), dim=1))  
         decode7_output = self.relu(decode7_output)
-        decode7_output, up1_mask = self.decoder1_2(decode7_output, mask_in=up1_mask)  
+        decode7_output = self.decoder1_2(decode7_output)  
         decode7_output = self.relu(decode7_output)
 
         # self.visualizer.update_windows(decode4_output[:,0:3,:,:], decode5_output[:,0:3,:,:], decode6_output[:,0:3,:,:], decode7_output[:,0:3,:,:])

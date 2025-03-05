@@ -1,4 +1,3 @@
-
 from itertools import islice
 from typing import Callable, Union, Tuple, List
 import time
@@ -243,7 +242,7 @@ class ModelWrapper(object):
                 label:3*1 192 256
                 '''
                 # input, label, label_mv = batch  # input：img albedo normal depth mv,label:img
-                projected_color, cur_color, projected_sample_time, cur_sample_time, label_image, gaze_point = batch
+                projected_color, cur_color, projected_sample_time, cur_sample_time, label_image, gaze_point, scene_name = batch
                 random_x = random.randint(0, self.width - crop_size)
                 random_y = random.randint(0, self.height - crop_size)
                 projected_color = projected_color.to(self.device)[:, :, random_y:random_y+crop_size, random_x:random_x+crop_size]
@@ -377,29 +376,24 @@ class ModelWrapper(object):
         # Main loop
         psnr_sum = 0
         ssim_sum = 0
+        lpips_sum = 0
         cropped_psnr_sum = 0
         cropped_ssim_sum = 0
+        cropped_lpips_sum = 0
         num = 0
         crop_size = 300
         pad_size = int(crop_size / 2)
-        pre_warp_color = None
-        grid = None
-        grid_norm = None
-        sample_time = None
-        warped_id = None
-        num_10000 = (torch.full((1, 1, self.height, self.width), -10000.0).to('cuda'))
         ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to('cuda')
         psnr = PeakSignalNoiseRatio().to('cuda')
-        frame_index = 0
 
         # self.ssim_sub = []
         # with open('./ssim_tmp/ssim_0.txt', "r") as file:
         #     lines = file.readlines()
         #     for line in lines:
         #         self.ssim_sub.append(float(line))
-
+        pre_scene = " "
         for index_sequence, batch in enumerate(self.validation_dataloader):  # 遍历每个序列
-            projected_color, cur_color, projected_sample_time, cur_sample_time, label_image, gaze_point = batch
+            projected_color, cur_color, projected_sample_time, cur_sample_time, label_image, gaze_point, scene_name = batch
             projected_color = projected_color.to(self.device)
             cur_color = cur_color.to(self.device)
             projected_sample_time = projected_sample_time.to(self.device)
@@ -407,6 +401,24 @@ class ModelWrapper(object):
             label_image = label_image.to(self.device)
             gaze_point = gaze_point.to(self.device)
             
+            if(pre_scene != scene_name[0]):
+                if pre_scene != " ":
+                    print(f"{pre_scene} Epoch {epoch}, PSNR: {psnr_sum / num:.4f}, SSIM: {ssim_sum / num:.4f}, LPIPS: {lpips_sum.item() / num:.4f}")
+                    print(f"{pre_scene} Epoch {epoch}, CUR_CROPPED_PSNR: {cropped_psnr_sum / num:.4f}, CUR_CROPPED_SSIM: {cropped_ssim_sum / num:.4f}, CUR_CROPPED_LPIPS: {cropped_lpips_sum.item() / num:.4f}")
+                    with open(os.path.join(self.path_save_models, "valid_data.txt"), "a") as f:
+                        f.write(f"{pre_scene} Epoch {epoch}, PSNR: {psnr_sum / num:.4f}, SSIM: {ssim_sum / num:.4f}, LPIPS: {lpips_sum.item() / num:.4f}\n")
+                        f.write(f"{pre_scene} Epoch {epoch}, CUR_CROPPED_PSNR: {cropped_psnr_sum / num:.4f}, CUR_CROPPED_SSIM: {cropped_ssim_sum / num:.4f}, CUR_CROPPED_LPIPS: {cropped_lpips_sum.item() / num:.4f}\n")
+                pre_scene = scene_name[0]
+                os.makedirs(os.path.join(self.path_save_plots, pre_scene), exist_ok=True)
+                psnr_sum = 0
+                ssim_sum = 0
+                lpips_sum = 0
+                cropped_psnr_sum = 0
+                cropped_ssim_sum = 0
+                cropped_lpips_sum = 0
+                num = 0
+
+
             # b, c, h, w = label_image.shape
             # x = torch.linspace(-1, 1, steps=w + 1)[:-1] + 1 / w
             # y = torch.linspace(-1, 1, steps=h + 1)[:-1] + 1 / h
@@ -418,7 +430,6 @@ class ModelWrapper(object):
             # grid_sub[:, 1:2, :, :] *= self.height // 2
 
             # Make prediction
-            all_fovea_masks = get_center_mask(gaze_point, [self.width, self.height])  
             prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time)  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
             # cur_gaze_coord = gaze_labels[0, 0:2]
             # cur_gaze_coord = [max(0, min(int(cur_gaze_coord[0]), 1919)), max(0, min(int(cur_gaze_coord[1]), 1079))]
@@ -428,15 +439,31 @@ class ModelWrapper(object):
             # cropped_label_img = pad_label_img[:, :, cur_gaze_coord[1]:cur_gaze_coord[1]+crop_size, cur_gaze_coord[0]:cur_gaze_coord[0]+crop_size]
             ssim_sum += ssim(prediction_image, label_image)
             psnr_sum += psnr(prediction_image, label_image)
+            all_fovea_masks = torch.ones_like(cur_sample_time)
+            lpips_sum += self.lpips(prediction_image, label_image, all_fovea_masks)
             pad_prediction = F.pad(prediction_image, (pad_size, pad_size, pad_size, pad_size))
             pad_label_img = F.pad(label_image, (pad_size, pad_size, pad_size, pad_size))
+            all_fovea_masks = F.pad(all_fovea_masks, (pad_size, pad_size, pad_size, pad_size))
             for i in range(gaze_point.shape[0]):  
                 cur_gaze_coord = gaze_point[i, 0:2]
                 cur_gaze_coord = [max(0, min(int(cur_gaze_coord[0]), self.width - 1)), max(0, min(int(cur_gaze_coord[1]), self.height - 1))]
+
+                pred_np = prediction_image[i].detach().cpu().numpy()  # 取当前样本
+                pred_np = np.transpose(pred_np, (1, 2, 0))           # CHW -> HWC
+                pred_np = np.clip(pred_np, 0, 1)                    # Clamp data to 0-1
+                pred_np = (pred_np * 255).astype(np.uint8)           # 假设数据范围[0,1]
+                pred_np = cv2.cvtColor(pred_np, cv2.COLOR_RGB2BGR)    # 确保颜色通道为BGR
+                cv2.circle(pred_np, cur_gaze_coord, crop_size // 2, (0, 0, 255), 2)        # 红色BGR格式
+                pred_tensor = torch.from_numpy(cv2.cvtColor(pred_np, cv2.COLOR_BGR2RGB))
+                pred_tensor = pred_tensor.permute(2, 0, 1).float() / 255.0  # HWC -> CHW
+                prediction_image[i] = pred_tensor.to(prediction_image.device)
+
                 cropped_predictions = pad_prediction[i:i+1, :, cur_gaze_coord[1]:cur_gaze_coord[1]+crop_size, cur_gaze_coord[0]:cur_gaze_coord[0]+crop_size]
                 cropped_label_imgs = pad_label_img[i:i+1, :, cur_gaze_coord[1]:cur_gaze_coord[1]+crop_size, cur_gaze_coord[0]:cur_gaze_coord[0]+crop_size]
+                cropped_all_fovea_masks = all_fovea_masks[i:i+1, :, cur_gaze_coord[1]:cur_gaze_coord[1]+crop_size, cur_gaze_coord[0]:cur_gaze_coord[0]+crop_size]
                 cropped_ssim_sum += ssim(cropped_predictions, cropped_label_imgs)
                 cropped_psnr_sum += psnr(cropped_predictions, cropped_label_imgs)
+                cropped_lpips_sum += self.lpips(cropped_predictions, cropped_label_imgs, cropped_all_fovea_masks)
 
             # cropped_psnr_sum += psnr(cropped_prediction, cropped_label_img)
             # # print(psnr(cropped_prediction, cropped_label_img))
@@ -475,8 +502,8 @@ class ModelWrapper(object):
                 #     nrow=self.validation_dataloader.dataset.number_of_frames)
                 save_image(
                     prediction_image,
-                    fp=os.path.join(self.path_save_plots,
-                                    'prediction_warp_{}_{}.exr'.format(epoch,index_sequence)),
+                    fp=os.path.join(self.path_save_plots, pre_scene,
+                                    'prediction_warp_{}_{}.exr'.format(epoch, index_sequence)),
                     format='exr',
                     nrow=self.validation_dataloader.dataset.number_of_frames)                  
                 # save_image(
@@ -563,12 +590,12 @@ class ModelWrapper(object):
                 #                     'prediction_sub_normal_{}_{}.exr'.format(epoch,index_sequence)),
                 #     format='exr',
                 #     nrow=self.validation_dataloader.dataset.number_of_frames)
-
-        print(f"Epoch {epoch}, PSNR: {psnr_sum / num:.4f}, SSIM: {ssim_sum / num:.4f}")
-        print(f"Epoch {epoch}, CUR_CROPPED_PSNR: {cropped_psnr_sum / num:.4f}, CUR_CROPPED_SSIM: {cropped_ssim_sum / num:.4f}")
+        print(f"{pre_scene} Epoch {epoch}, PSNR: {psnr_sum / num:.4f}, SSIM: {ssim_sum / num:.4f}, LPIPS: {lpips_sum.item() / num:.4f}")
+        print(f"{pre_scene} Epoch {epoch}, CUR_CROPPED_PSNR: {cropped_psnr_sum / num:.4f}, CUR_CROPPED_SSIM: {cropped_ssim_sum / num:.4f}, CUR_CROPPED_LPIPS: {cropped_lpips_sum.item() / num:.4f}")
         with open(os.path.join(self.path_save_models, "valid_data.txt"), "a") as f:
-            f.write(f"Epoch {epoch}, PSNR: {psnr_sum / num:.4f}, SSIM: {ssim_sum / num:.4f}\n")
-            f.write(f"Epoch {epoch}, CUR_CROPPED_PSNR: {cropped_psnr_sum / num:.4f}, CUR_CROPPED_SSIM: {cropped_ssim_sum / num:.4f}\n")
+            f.write(f"{pre_scene} Epoch {epoch}, PSNR: {psnr_sum / num:.4f}, SSIM: {ssim_sum / num:.4f}, LPIPS: {lpips_sum.item() / num:.4f}\n")
+            f.write(f"{pre_scene} Epoch {epoch}, CUR_CROPPED_PSNR: {cropped_psnr_sum / num:.4f}, CUR_CROPPED_SSIM: {cropped_ssim_sum / num:.4f}, CUR_CROPPED_LPIPS: {cropped_lpips_sum.item() / num:.4f}\n")
+
 
     @torch.no_grad()
     def validate_1(self, epoch = 0, plot_after_n_iterations = 500,
@@ -588,36 +615,49 @@ class ModelWrapper(object):
         # Main loop
         psnr_sum = 0
         ssim_sum = 0
+        lpips_sum = 0
         cropped_psnr_sum = 0
         cropped_ssim_sum = 0
+        cropped_lpips_sum = 0
         num = 0
         crop_size = 300
         pad_size = int(crop_size / 2)
-        pre_warp_color = None
-        grid = None
-        grid_norm = None
-        sample_time = None
-        warped_id = None
-        num_10000 = (torch.full((1, 1, self.height, self.width), -10000.0).to('cuda'))
         ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to('cuda')
         psnr = PeakSignalNoiseRatio().to('cuda')
-        frame_index = 0
 
         # self.ssim_sub = []
         # with open('./ssim_tmp/ssim_0.txt', "r") as file:
         #     lines = file.readlines()
         #     for line in lines:
         #         self.ssim_sub.append(float(line))
-
+        pre_scene = " "
         for index_sequence, batch in enumerate(self.validation_dataloader_1):  # 遍历每个序列
-            projected_color, cur_color, projected_sample_time, cur_sample_time, label_image, gaze_point = batch
+            projected_color, cur_color, projected_sample_time, cur_sample_time, label_image, gaze_point, scene_name = batch
             projected_color = projected_color.to(self.device)
             cur_color = cur_color.to(self.device)
             projected_sample_time = projected_sample_time.to(self.device)
             cur_sample_time = cur_sample_time.to(self.device)
             label_image = label_image.to(self.device)
             gaze_point = gaze_point.to(self.device)
-            # down_img = self.downsample_with_max_weight(input_image, sample_time_input, 16)      
+            
+            if(pre_scene != scene_name[0]):
+                if pre_scene != " ":
+                    print(f"{pre_scene} Epoch {epoch}, PSNR: {psnr_sum / num:.4f}, SSIM: {ssim_sum / num:.4f}, LPIPS: {lpips_sum.item() / num:.4f}")
+                    print(f"{pre_scene} Epoch {epoch}, CUR_CROPPED_PSNR: {cropped_psnr_sum / num:.4f}, CUR_CROPPED_SSIM: {cropped_ssim_sum / num:.4f}, CUR_CROPPED_LPIPS: {cropped_lpips_sum.item() / num:.4f}")
+                    with open(os.path.join(self.path_save_models, "valid_data.txt"), "a") as f:
+                        f.write(f"{pre_scene} Epoch {epoch}, PSNR: {psnr_sum / num:.4f}, SSIM: {ssim_sum / num:.4f}, LPIPS: {lpips_sum.item() / num:.4f}\n")
+                        f.write(f"{pre_scene} Epoch {epoch}, CUR_CROPPED_PSNR: {cropped_psnr_sum / num:.4f}, CUR_CROPPED_SSIM: {cropped_ssim_sum / num:.4f}, CUR_CROPPED_LPIPS: {cropped_lpips_sum.item() / num:.4f}\n")
+                pre_scene = scene_name[0]
+                os.makedirs(os.path.join(self.path_save_plots, pre_scene), exist_ok=True)
+                psnr_sum = 0
+                ssim_sum = 0
+                lpips_sum = 0
+                cropped_psnr_sum = 0
+                cropped_ssim_sum = 0
+                cropped_lpips_sum = 0
+                num = 0
+
+
             # b, c, h, w = label_image.shape
             # x = torch.linspace(-1, 1, steps=w + 1)[:-1] + 1 / w
             # y = torch.linspace(-1, 1, steps=h + 1)[:-1] + 1 / h
@@ -629,7 +669,6 @@ class ModelWrapper(object):
             # grid_sub[:, 1:2, :, :] *= self.height // 2
 
             # Make prediction
-            all_fovea_masks = get_center_mask(gaze_point, [self.width, self.height])  
             prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time)  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
             # cur_gaze_coord = gaze_labels[0, 0:2]
             # cur_gaze_coord = [max(0, min(int(cur_gaze_coord[0]), 1919)), max(0, min(int(cur_gaze_coord[1]), 1079))]
@@ -639,15 +678,31 @@ class ModelWrapper(object):
             # cropped_label_img = pad_label_img[:, :, cur_gaze_coord[1]:cur_gaze_coord[1]+crop_size, cur_gaze_coord[0]:cur_gaze_coord[0]+crop_size]
             ssim_sum += ssim(prediction_image, label_image)
             psnr_sum += psnr(prediction_image, label_image)
+            all_fovea_masks = torch.ones_like(cur_sample_time)
+            lpips_sum += self.lpips(prediction_image, label_image, all_fovea_masks)
             pad_prediction = F.pad(prediction_image, (pad_size, pad_size, pad_size, pad_size))
             pad_label_img = F.pad(label_image, (pad_size, pad_size, pad_size, pad_size))
+            all_fovea_masks = F.pad(all_fovea_masks, (pad_size, pad_size, pad_size, pad_size))
             for i in range(gaze_point.shape[0]):  
                 cur_gaze_coord = gaze_point[i, 0:2]
                 cur_gaze_coord = [max(0, min(int(cur_gaze_coord[0]), self.width - 1)), max(0, min(int(cur_gaze_coord[1]), self.height - 1))]
+
+                pred_np = prediction_image[i].detach().cpu().numpy()  # 取当前样本
+                pred_np = np.transpose(pred_np, (1, 2, 0))           # CHW -> HWC
+                pred_np = np.clip(pred_np, 0, 1)                    # Clamp data to 0-1
+                pred_np = (pred_np * 255).astype(np.uint8)           # 假设数据范围[0,1]
+                pred_np = cv2.cvtColor(pred_np, cv2.COLOR_RGB2BGR)    # 确保颜色通道为BGR
+                center = (int(cur_gaze_coord[0]), int(cur_gaze_coord[1]))  # 圆心坐标
+                print(center)
+                radius = crop_size // 2                                     # 直径转半径
+                cv2.circle(pred_np, center, radius, (0, 0, 255), 2)        # 红色BGR格式
+                
                 cropped_predictions = pad_prediction[i:i+1, :, cur_gaze_coord[1]:cur_gaze_coord[1]+crop_size, cur_gaze_coord[0]:cur_gaze_coord[0]+crop_size]
                 cropped_label_imgs = pad_label_img[i:i+1, :, cur_gaze_coord[1]:cur_gaze_coord[1]+crop_size, cur_gaze_coord[0]:cur_gaze_coord[0]+crop_size]
+                cropped_all_fovea_masks = all_fovea_masks[i:i+1, :, cur_gaze_coord[1]:cur_gaze_coord[1]+crop_size, cur_gaze_coord[0]:cur_gaze_coord[0]+crop_size]
                 cropped_ssim_sum += ssim(cropped_predictions, cropped_label_imgs)
                 cropped_psnr_sum += psnr(cropped_predictions, cropped_label_imgs)
+                cropped_lpips_sum += self.lpips(cropped_predictions, cropped_label_imgs, cropped_all_fovea_masks)
 
             # cropped_psnr_sum += psnr(cropped_prediction, cropped_label_img)
             # # print(psnr(cropped_prediction, cropped_label_img))
@@ -685,17 +740,23 @@ class ModelWrapper(object):
                 #     format='exr',
                 #     nrow=self.validation_dataloader.dataset.number_of_frames)
                 save_image(
-                    prediction_image,
-                    fp=os.path.join(self.path_save_plots,
-                                    'prediction_warp_{}_{}.exr'.format(epoch,index_sequence)),
+                    pred_np.float() / 255.0,
+                    fp=os.path.join(self.path_save_plots, pre_scene,
+                                    'prediction_warp_{}_{}.exr'.format(epoch, index_sequence)),
                     format='exr',
                     nrow=self.validation_dataloader.dataset.number_of_frames)                  
-                save_image(
-                    label_image,
-                    fp=os.path.join(self.path_save_plots,
-                                    'label_image_{}_{}.exr'.format(epoch,index_sequence)),
-                    format='exr',
-                    nrow=self.validation_dataloader.dataset.number_of_frames)                  
+                # save_image(
+                #     label_image,
+                #     fp=os.path.join(self.path_save_plots,
+                #                     'label_image_{}_{}.exr'.format(epoch,index_sequence)),
+                #     format='exr',
+                #     nrow=self.validation_dataloader.dataset.number_of_frames)                  
+                # save_image(
+                #     sample_time_input,
+                #     fp=os.path.join(self.path_save_plots,
+                #                     'sample_time_input_{}_{}.exr'.format(epoch,index_sequence)),
+                #     format='exr',
+                #     nrow=self.validation_dataloader.dataset.number_of_frames)                  
                 # save_image(
                 #     out_color,
                 #     fp=os.path.join(self.path_save_plots,
@@ -768,12 +829,11 @@ class ModelWrapper(object):
                 #                     'prediction_sub_normal_{}_{}.exr'.format(epoch,index_sequence)),
                 #     format='exr',
                 #     nrow=self.validation_dataloader.dataset.number_of_frames)
-
-        print(f"Epoch {epoch}, PSNR: {psnr_sum / num:.4f}, SSIM: {ssim_sum / num:.4f}")
-        print(f"Epoch {epoch}, CUR_CROPPED_PSNR: {cropped_psnr_sum / num:.4f}, CUR_CROPPED_SSIM: {cropped_ssim_sum / num:.4f}")
+        print(f"{pre_scene} Epoch {epoch}, PSNR: {psnr_sum / num:.4f}, SSIM: {ssim_sum / num:.4f}, LPIPS: {lpips_sum.item() / num:.4f}")
+        print(f"{pre_scene} Epoch {epoch}, CUR_CROPPED_PSNR: {cropped_psnr_sum / num:.4f}, CUR_CROPPED_SSIM: {cropped_ssim_sum / num:.4f}, CUR_CROPPED_LPIPS: {cropped_lpips_sum.item() / num:.4f}")
         with open(os.path.join(self.path_save_models, "valid_data.txt"), "a") as f:
-            f.write(f"Epoch {epoch}, PSNR: {psnr_sum / num:.4f}, SSIM: {ssim_sum / num:.4f}\n")
-            f.write(f"Epoch {epoch}, CUR_CROPPED_PSNR: {cropped_psnr_sum / num:.4f}, CUR_CROPPED_SSIM: {cropped_ssim_sum / num:.4f}\n")
+            f.write(f"{pre_scene} Epoch {epoch}, PSNR: {psnr_sum / num:.4f}, SSIM: {ssim_sum / num:.4f}, LPIPS: {lpips_sum.item() / num:.4f}\n")
+            f.write(f"{pre_scene} Epoch {epoch}, CUR_CROPPED_PSNR: {cropped_psnr_sum / num:.4f}, CUR_CROPPED_SSIM: {cropped_ssim_sum / num:.4f}, CUR_CROPPED_LPIPS: {cropped_lpips_sum.item() / num:.4f}\n")
 
     @torch.no_grad()
     def test(self, epoch = 0, plot_after_n_iterations = 1,
@@ -808,7 +868,7 @@ class ModelWrapper(object):
         #         self.ssim_sub.append(float(line))
 
         for index_sequence, batch in enumerate(self.test_dataloader):  # 遍历每个序列
-            projected_color, cur_color, projected_sample_time, cur_sample_time, label_image, gaze_point = batch
+            projected_color, cur_color, projected_sample_time, cur_sample_time, label_image, gaze_point, scene_name = batch
             input_image = input_image.to(self.device)
             # albedo = albedo.to(self.device)
             # normal = normal.to(self.device)

@@ -153,6 +153,7 @@ class REDSFovea(REDS):
         :return: (Tuple[torch.Tensor, torch.Tensor]) Low res fovea sampled sequence, high res sequence, new video flag
         """
         index = 0
+        scene_name = os.path.basename(self.data_path[item][0].split(os.sep)[-2])
         for frame in self.data_path[item]:
             if index == 0:#img
                 exr_image = getEXR(frame)#h w c
@@ -179,7 +180,7 @@ class REDSFovea(REDS):
         # gaze_point = AngularCoord2ScreenCoord(gaze_point, [label_image.shape[2], label_image.shape[1]])
         # label_albedo *= mask.float()  
         projected_sample_time = torch.where(projected_sample_time < 90, (90 - projected_sample_time) / 90.0, torch.tensor(0.0))  
-        return projected_color, cur_color, projected_sample_time, cur_sample_time, label_image, gaze_point
+        return projected_color, cur_color, projected_sample_time, cur_sample_time, label_image, gaze_point, scene_name
 
 
 class REDSParallel(Dataset):
