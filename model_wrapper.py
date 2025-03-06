@@ -64,7 +64,8 @@ class ModelWrapper(object):
     This class wraps all modules and implements train, validation, test and inference methods
     """
     def __init__(self,generator_network: Union[nn.Module, nn.DataParallel],
-                #  vgg_19: Union[nn.Module, nn.DataParallel],
+                 pwc_net: Union[nn.Module, nn.DataParallel],
+                 resample: Union[nn.Module, nn.DataParallel],
                  L1Loss: Union[nn.Module, nn.DataParallel],
                  lpips: Union[nn.Module, nn.DataParallel],
                  generator_network_optimizer: torch.optim.Optimizer,
@@ -111,7 +112,8 @@ class ModelWrapper(object):
         self.lpips = lpips
         self.generator_network_optimizer = generator_network_optimizer
         self.scheduler = scheduler
-
+        self.pwc_net = pwc_net
+        self.resample = resample
         self.training_dataloader = training_dataloader
         self.validation_dataloader = validation_dataloader
         self.validation_dataloader_1 = validation_dataloader_1
@@ -214,6 +216,7 @@ class ModelWrapper(object):
         # self.vgg_19.eval()
         # self.vgg22.eval()
         self.lpips.eval()
+        self.pwc_net.eval()
         # Models to device
         self.generator_network.to(self.device)
         # self.depth_network.to(self.device)
@@ -234,6 +237,9 @@ class ModelWrapper(object):
             global global_epoch
             global_epoch = epoch
             self.all_one = torch.ones([1, 1, crop_size, crop_size]).to('cuda')
+            prediction_sequence = []
+            prediction_sequence_length = 4
+            conti_dataset_length = 20
             # prevResult = None
             # pre_ref = None
             for index_sequence, batch in enumerate(self.training_dataloader):  # 遍历每个序列
@@ -243,8 +249,9 @@ class ModelWrapper(object):
                 '''
                 # input, label, label_mv = batch  # input：img albedo normal depth mv,label:img
                 projected_color, cur_color, projected_sample_time, cur_sample_time, label_image, gaze_point, scene_name = batch
-                random_x = random.randint(0, self.width - crop_size)
-                random_y = random.randint(0, self.height - crop_size)
+                if index_sequence % conti_dataset_length == 0:
+                    random_x = random.randint(0, self.width - crop_size)
+                    random_y = random.randint(0, self.height - crop_size)
                 projected_color = projected_color.to(self.device)[:, :, random_y:random_y+crop_size, random_x:random_x+crop_size]
                 cur_color = cur_color.to(self.device)[:, :, random_y:random_y+crop_size, random_x:random_x+crop_size]
                 projected_sample_time = projected_sample_time.to(self.device)[:, :, random_y:random_y+crop_size, random_x:random_x+crop_size]
@@ -257,7 +264,6 @@ class ModelWrapper(object):
                 # self.vgg_19.zero_grad()
                 # self.vgg22.zero_grad()
                 # Update progress bar
-                self.progress_bar.update(n=gaze_point.shape[0])
 
                 # grid_sub = grid - grid_norm
                 # grid_sub[:, 0:1, :, :] *= self.width // 2
@@ -267,16 +273,60 @@ class ModelWrapper(object):
                 all_fovea_masks = get_center_mask(gaze_point, [self.width, self.height])[:, :, random_y:random_y+crop_size, random_x:random_x+crop_size]
                 # all_fovea_masks = torch.ones(all_fovea_masks.shape).to('cuda')  
                 prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time)  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
+                prediction_sequence.append(prediction_image)
 
                 loss_spatial = self.L1Loss(prediction_image, label_image) / 6
                 loss_ssim_fovea = torch.mean(all_fovea_masks) - pytorch_ssim.ssim(prediction_image, label_image, all_fovea_masks)
                 loss_ssim = 1 - pytorch_ssim.ssim(prediction_image, label_image, self.all_one)
                 loss_lpips = self.lpips(prediction_image, label_image, all_fovea_masks)
-                
+
                 downsampled_prediction_image = F.avg_pool2d(prediction_image, kernel_size=8, stride=8)  
                 downsampled_label_image = F.avg_pool2d(label_image, kernel_size=8, stride=8)  
 
                 loss_shadow = torch.mean((downsampled_prediction_image + 0.01) / (downsampled_label_image + 0.01) - 1) ** 2
+
+                if len(prediction_sequence) >= prediction_sequence_length:
+                    prediction_reshaped_4d = torch.cat(prediction_sequence, dim=0)
+                    prediction_pair = torch.cat((prediction_reshaped_4d[:-1].detach(), prediction_reshaped_4d[1:].detach()),
+                                                dim=1)
+                    # Get flow
+                    with torch.no_grad():
+                        flow = self.pwc_net(prediction_pair)
+                        # Get resampled images
+                        resampled_images = self.resample(prediction_reshaped_4d[1:], flow)
+                    # Calc flow loss
+                    loss_flow = self.L1Loss(prediction_reshaped_4d[:-1], resampled_images)
+                    prediction_sequence = []
+                    all_loss = (loss_spatial  + loss_ssim * 2 + loss_lpips + loss_shadow + loss_flow)#L1+VGG
+                    all_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.generator_network.parameters(), max_norm=0.16)
+                    # Optimize generator
+                    self.generator_network_optimizer.step()
+                    self.progress_bar.set_description(
+                        'L1 Loss={:.3f}, ssim Loss={:.3f}, ssim Loss fovea={:.3f}, shaodw_loss={:.3f}, flow_loss={:.3f}, all Loss={:.3f}'
+                        # 'L1 Loss={:.3f}, ssim Loss={:.3f}, T Loss = {:.3f} , all Loss={:.3f}'
+                        .format(loss_spatial.item(),
+                                loss_ssim.item(),
+                                loss_ssim_fovea.item(),
+                                loss_shadow.item(),
+                                loss_flow.item(),
+                                all_loss.item()))
+                else:
+                    all_loss = (loss_spatial  + loss_ssim * 2 + loss_lpips + loss_shadow)#L1+VGG
+                    all_loss.backward(retain_graph=True)
+                    torch.nn.utils.clip_grad_norm_(self.generator_network.parameters(), max_norm=0.16)
+                    # Optimize generator
+                    self.generator_network_optimizer.step()
+                    self.progress_bar.set_description(
+                        'L1 Loss={:.3f}, ssim Loss={:.3f}, ssim Loss fovea={:.3f}, shaodw_loss={:.3f}, all Loss={:.3f}'
+                        # 'L1 Loss={:.3f}, ssim Loss={:.3f}, T Loss = {:.3f} , all Loss={:.3f}'
+                        .format(loss_spatial.item(),
+                                loss_ssim.item(),
+                                loss_ssim_fovea.item(),
+                                loss_shadow.item(),
+                                all_loss.item()))
+                self.progress_bar.update(n=gaze_point.shape[0])
+
                 # if index_sequence == 0:
                 #     loss_temporal = self.L1Loss(
                 #         (prediction - prediction),
@@ -292,11 +342,6 @@ class ModelWrapper(object):
                 # Calc gradients
                 # prevResult = prediction.detach()  # 1 3 768 1024
                 # pre_ref = label_image.detach()
-                all_loss = (loss_spatial  + loss_ssim * 2 + loss_lpips + loss_shadow)#L1+VGG
-                all_loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.generator_network.parameters(), max_norm=0.16)
-                # Optimize generator
-                self.generator_network_optimizer.step()
                 # self.DGaze_ET_optimizer.step()
                 # for name, param in self.DGaze_ET_model.named_parameters():  
                 #     print(f"Parameter name: {name}")  
@@ -314,14 +359,6 @@ class ModelWrapper(object):
                 #     self.notnan_optimizer = copy.deepcopy(self.generator_network_optimizer)
                 
                 # Update progress bar
-                self.progress_bar.set_description(
-                    'L1 Loss={:.3f}, ssim Loss={:.3f}, ssim Loss fovea={:.3f}, shaodw_loss={:.3f}, all Loss={:.3f}'
-                    # 'L1 Loss={:.3f}, ssim Loss={:.3f}, T Loss = {:.3f} , all Loss={:.3f}'
-                    .format(loss_spatial.item(),
-                            loss_ssim.item(),
-                            loss_ssim_fovea.item(),
-                            loss_shadow.item(),
-                            all_loss.item()))
 
                 # Plot training prediction
                 if (self.progress_bar.n) % (plot_after_n_iterations) == 0:
@@ -386,11 +423,6 @@ class ModelWrapper(object):
         ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to('cuda')
         psnr = PeakSignalNoiseRatio().to('cuda')
 
-        # self.ssim_sub = []
-        # with open('./ssim_tmp/ssim_0.txt', "r") as file:
-        #     lines = file.readlines()
-        #     for line in lines:
-        #         self.ssim_sub.append(float(line))
         pre_scene = " "
         for index_sequence, batch in enumerate(self.validation_dataloader):  # 遍历每个序列
             projected_color, cur_color, projected_sample_time, cur_sample_time, label_image, gaze_point, scene_name = batch
@@ -418,25 +450,9 @@ class ModelWrapper(object):
                 cropped_lpips_sum = 0
                 num = 0
 
-
-            # b, c, h, w = label_image.shape
-            # x = torch.linspace(-1, 1, steps=w + 1)[:-1] + 1 / w
-            # y = torch.linspace(-1, 1, steps=h + 1)[:-1] + 1 / h
-            # grid_y, grid_x = torch.meshgrid(y, x)
-            # grid_norm = torch.stack([grid_x, grid_y], dim=0).unsqueeze(0).to(self.device)
-                                        
-            # grid_sub = grid - grid_norm
-            # grid_sub[:, 0:1, :, :] *= self.width // 2
-            # grid_sub[:, 1:2, :, :] *= self.height // 2
-
             # Make prediction
             prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time)  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
-            # cur_gaze_coord = gaze_labels[0, 0:2]
-            # cur_gaze_coord = [max(0, min(int(cur_gaze_coord[0]), 1919)), max(0, min(int(cur_gaze_coord[1]), 1079))]
-            # pad_prediction = F.pad(prediction, (pad_size, pad_size, pad_size, pad_size))
-            # pad_label_img = F.pad(label_img, (pad_size, pad_size, pad_size, pad_size))
-            # cropped_prediction = pad_prediction[:, :, cur_gaze_coord[1]:cur_gaze_coord[1]+crop_size, cur_gaze_coord[0]:cur_gaze_coord[0]+crop_size]
-            # cropped_label_img = pad_label_img[:, :, cur_gaze_coord[1]:cur_gaze_coord[1]+crop_size, cur_gaze_coord[0]:cur_gaze_coord[0]+crop_size]
+
             ssim_sum += ssim(prediction_image, label_image)
             psnr_sum += psnr(prediction_image, label_image)
             all_fovea_masks = torch.ones_like(cur_sample_time)
@@ -465,131 +481,15 @@ class ModelWrapper(object):
                 cropped_psnr_sum += psnr(cropped_predictions, cropped_label_imgs)
                 cropped_lpips_sum += self.lpips(cropped_predictions, cropped_label_imgs, cropped_all_fovea_masks)
 
-            # cropped_psnr_sum += psnr(cropped_prediction, cropped_label_img)
-            # # print(psnr(cropped_prediction, cropped_label_img))
-            # cropped_ssim_sum += ssim(cropped_prediction, cropped_label_img)
-            # print(ssim(cropped_prediction, cropped_label_img))
-            # print(f"Index {index_sequence}, CUR_CROPPED_PSNR: {psnr(cropped_prediction, cropped_label_img):.4f}, CUR_CROPPED_SSIM: {ssim(cropped_prediction, cropped_label_img):.4f}")
-            # print(f"{index_sequence} {psnr(cropped_prediction, cropped_label_img):.4f} {ssim(cropped_prediction, cropped_label_img):.4f}")
-            # with open(os.path.join(self.path_save_models, "valid_ssim.txt"), "a") as f:
-            #     f.write(f"{ssim(cropped_prediction, cropped_label_img):.4f}\n")
-
-            # print(f"{ssim(cropped_prediction, cropped_label_img):.4f}")
             num += gaze_point.shape[0]          
 
-            # prediction_gaze_position = torch.clamp(prediction[0] * 255, min=0, max=255).to(torch.uint8).cpu()
-            # for thickness in range(0, 3):
-            #     boxes = torch.tensor([[cur_gaze_coord[0]-pad_size-thickness, cur_gaze_coord[1]-pad_size-thickness, cur_gaze_coord[0]+pad_size+thickness, cur_gaze_coord[1]+pad_size+thickness]])  # 形状为(N, 4)，这里N=1
-            #     prediction_gaze_position = draw_bounding_boxes(prediction_gaze_position, boxes, colors=[(255, 0, 0)])
-            #     boxes = torch.tensor([[cur_gaze_coord[0]-pad_size+thickness, cur_gaze_coord[1]-pad_size+thickness, cur_gaze_coord[0]+pad_size-thickness, cur_gaze_coord[1]+pad_size-thickness]])  # 形状为(N, 4)，这里N=1
-            #     prediction_gaze_position = draw_bounding_boxes(prediction_gaze_position, boxes, colors=[(255, 0, 0)])
-            # torch.cuda.synchronize()
-
             if index_sequence % plot_after_n_iterations == 0:
-                # dummy_input =(grid_sub, albedo, normal, input_image, sample_time_input)
-                # torch.onnx.export(self.generator_network.module,
-                #                 dummy_input,
-                #                 'generator_network_2.onnx',
-                #                 verbose=True,
-                #                 opset_version=11,
-                #                 operator_export_type=torch.onnx.OperatorExportTypes.ONNX)
-
-                # save_image(
-                #     prediction_gaze_position.to(torch.float32) / 255,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
                 save_image(
                     prediction_image,
                     fp=os.path.join(self.path_save_plots, pre_scene,
                                     'prediction_warp_{}_{}.exr'.format(epoch, index_sequence)),
                     format='exr',
                     nrow=self.validation_dataloader.dataset.number_of_frames)                  
-                # save_image(
-                #     label_image,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'label_image_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)                  
-                # save_image(
-                #     sample_time_input,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'sample_time_input_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)                  
-                # save_image(
-                #     out_color,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_warp_process_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     out_color1,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_warp_process1_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     out_color2,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_warp_process2_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     torch.clamp(torch.reciprocal(sample_time+1) * 2, 0, 1),
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_time_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     F.interpolate(label_img, scale_factor=(1 / 4), mode='bilinear', align_corners=False),
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'label_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     torch.cat((num_1, grid_sub), dim=1),
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_grid_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     mask_albedo,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_mask_albedo_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     mask_normal,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_mask_normal_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     pre_warp_albedo,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_pre_warp_albedo_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     pre_warp_normal,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_pre_warped_normal_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     torch.abs(pre_warp_albedo - mask_albedo),
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_sub_albedo_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     torch.abs(pre_warp_normal - mask_normal),
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_sub_normal_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
         print(f"{pre_scene} Epoch {epoch}, PSNR: {psnr_sum / num:.4f}, SSIM: {ssim_sum / num:.4f}, LPIPS: {lpips_sum.item() / num:.4f}")
         print(f"{pre_scene} Epoch {epoch}, CUR_CROPPED_PSNR: {cropped_psnr_sum / num:.4f}, CUR_CROPPED_SSIM: {cropped_ssim_sum / num:.4f}, CUR_CROPPED_LPIPS: {cropped_lpips_sum.item() / num:.4f}")
         with open(os.path.join(self.path_save_models, "valid_data.txt"), "a") as f:
@@ -625,11 +525,6 @@ class ModelWrapper(object):
         ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to('cuda')
         psnr = PeakSignalNoiseRatio().to('cuda')
 
-        # self.ssim_sub = []
-        # with open('./ssim_tmp/ssim_0.txt', "r") as file:
-        #     lines = file.readlines()
-        #     for line in lines:
-        #         self.ssim_sub.append(float(line))
         pre_scene = " "
         for index_sequence, batch in enumerate(self.validation_dataloader_1):  # 遍历每个序列
             projected_color, cur_color, projected_sample_time, cur_sample_time, label_image, gaze_point, scene_name = batch
@@ -657,25 +552,9 @@ class ModelWrapper(object):
                 cropped_lpips_sum = 0
                 num = 0
 
-
-            # b, c, h, w = label_image.shape
-            # x = torch.linspace(-1, 1, steps=w + 1)[:-1] + 1 / w
-            # y = torch.linspace(-1, 1, steps=h + 1)[:-1] + 1 / h
-            # grid_y, grid_x = torch.meshgrid(y, x)
-            # grid_norm = torch.stack([grid_x, grid_y], dim=0).unsqueeze(0).to(self.device)
-                                        
-            # grid_sub = grid - grid_norm
-            # grid_sub[:, 0:1, :, :] *= self.width // 2
-            # grid_sub[:, 1:2, :, :] *= self.height // 2
-
             # Make prediction
             prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time)  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
-            # cur_gaze_coord = gaze_labels[0, 0:2]
-            # cur_gaze_coord = [max(0, min(int(cur_gaze_coord[0]), 1919)), max(0, min(int(cur_gaze_coord[1]), 1079))]
-            # pad_prediction = F.pad(prediction, (pad_size, pad_size, pad_size, pad_size))
-            # pad_label_img = F.pad(label_img, (pad_size, pad_size, pad_size, pad_size))
-            # cropped_prediction = pad_prediction[:, :, cur_gaze_coord[1]:cur_gaze_coord[1]+crop_size, cur_gaze_coord[0]:cur_gaze_coord[0]+crop_size]
-            # cropped_label_img = pad_label_img[:, :, cur_gaze_coord[1]:cur_gaze_coord[1]+crop_size, cur_gaze_coord[0]:cur_gaze_coord[0]+crop_size]
+
             ssim_sum += ssim(prediction_image, label_image)
             psnr_sum += psnr(prediction_image, label_image)
             all_fovea_masks = torch.ones_like(cur_sample_time)
@@ -692,11 +571,11 @@ class ModelWrapper(object):
                 pred_np = np.clip(pred_np, 0, 1)                    # Clamp data to 0-1
                 pred_np = (pred_np * 255).astype(np.uint8)           # 假设数据范围[0,1]
                 pred_np = cv2.cvtColor(pred_np, cv2.COLOR_RGB2BGR)    # 确保颜色通道为BGR
-                center = (int(cur_gaze_coord[0]), int(cur_gaze_coord[1]))  # 圆心坐标
-                print(center)
-                radius = crop_size // 2                                     # 直径转半径
-                cv2.circle(pred_np, center, radius, (0, 0, 255), 2)        # 红色BGR格式
-                
+                cv2.circle(pred_np, cur_gaze_coord, crop_size // 2, (0, 0, 255), 2)        # 红色BGR格式
+                pred_tensor = torch.from_numpy(cv2.cvtColor(pred_np, cv2.COLOR_BGR2RGB))
+                pred_tensor = pred_tensor.permute(2, 0, 1).float() / 255.0  # HWC -> CHW
+                prediction_image[i] = pred_tensor.to(prediction_image.device)
+
                 cropped_predictions = pad_prediction[i:i+1, :, cur_gaze_coord[1]:cur_gaze_coord[1]+crop_size, cur_gaze_coord[0]:cur_gaze_coord[0]+crop_size]
                 cropped_label_imgs = pad_label_img[i:i+1, :, cur_gaze_coord[1]:cur_gaze_coord[1]+crop_size, cur_gaze_coord[0]:cur_gaze_coord[0]+crop_size]
                 cropped_all_fovea_masks = all_fovea_masks[i:i+1, :, cur_gaze_coord[1]:cur_gaze_coord[1]+crop_size, cur_gaze_coord[0]:cur_gaze_coord[0]+crop_size]
@@ -704,131 +583,15 @@ class ModelWrapper(object):
                 cropped_psnr_sum += psnr(cropped_predictions, cropped_label_imgs)
                 cropped_lpips_sum += self.lpips(cropped_predictions, cropped_label_imgs, cropped_all_fovea_masks)
 
-            # cropped_psnr_sum += psnr(cropped_prediction, cropped_label_img)
-            # # print(psnr(cropped_prediction, cropped_label_img))
-            # cropped_ssim_sum += ssim(cropped_prediction, cropped_label_img)
-            # print(ssim(cropped_prediction, cropped_label_img))
-            # print(f"Index {index_sequence}, CUR_CROPPED_PSNR: {psnr(cropped_prediction, cropped_label_img):.4f}, CUR_CROPPED_SSIM: {ssim(cropped_prediction, cropped_label_img):.4f}")
-            # print(f"{index_sequence} {psnr(cropped_prediction, cropped_label_img):.4f} {ssim(cropped_prediction, cropped_label_img):.4f}")
-            # with open(os.path.join(self.path_save_models, "valid_ssim.txt"), "a") as f:
-            #     f.write(f"{ssim(cropped_prediction, cropped_label_img):.4f}\n")
-
-            # print(f"{ssim(cropped_prediction, cropped_label_img):.4f}")
             num += gaze_point.shape[0]          
 
-            # prediction_gaze_position = torch.clamp(prediction[0] * 255, min=0, max=255).to(torch.uint8).cpu()
-            # for thickness in range(0, 3):
-            #     boxes = torch.tensor([[cur_gaze_coord[0]-pad_size-thickness, cur_gaze_coord[1]-pad_size-thickness, cur_gaze_coord[0]+pad_size+thickness, cur_gaze_coord[1]+pad_size+thickness]])  # 形状为(N, 4)，这里N=1
-            #     prediction_gaze_position = draw_bounding_boxes(prediction_gaze_position, boxes, colors=[(255, 0, 0)])
-            #     boxes = torch.tensor([[cur_gaze_coord[0]-pad_size+thickness, cur_gaze_coord[1]-pad_size+thickness, cur_gaze_coord[0]+pad_size-thickness, cur_gaze_coord[1]+pad_size-thickness]])  # 形状为(N, 4)，这里N=1
-            #     prediction_gaze_position = draw_bounding_boxes(prediction_gaze_position, boxes, colors=[(255, 0, 0)])
-            # torch.cuda.synchronize()
-
             if index_sequence % plot_after_n_iterations == 0:
-                # dummy_input =(grid_sub, albedo, normal, input_image, sample_time_input)
-                # torch.onnx.export(self.generator_network.module,
-                #                 dummy_input,
-                #                 'generator_network_2.onnx',
-                #                 verbose=True,
-                #                 opset_version=11,
-                #                 operator_export_type=torch.onnx.OperatorExportTypes.ONNX)
-
-                # save_image(
-                #     prediction_gaze_position.to(torch.float32) / 255,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
                 save_image(
-                    pred_np.float() / 255.0,
+                    prediction_image,
                     fp=os.path.join(self.path_save_plots, pre_scene,
                                     'prediction_warp_{}_{}.exr'.format(epoch, index_sequence)),
                     format='exr',
                     nrow=self.validation_dataloader.dataset.number_of_frames)                  
-                # save_image(
-                #     label_image,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'label_image_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)                  
-                # save_image(
-                #     sample_time_input,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'sample_time_input_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)                  
-                # save_image(
-                #     out_color,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_warp_process_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     out_color1,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_warp_process1_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     out_color2,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_warp_process2_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     torch.clamp(torch.reciprocal(sample_time+1) * 2, 0, 1),
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_time_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     F.interpolate(label_img, scale_factor=(1 / 4), mode='bilinear', align_corners=False),
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'label_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     torch.cat((num_1, grid_sub), dim=1),
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_grid_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     mask_albedo,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_mask_albedo_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     mask_normal,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_mask_normal_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     pre_warp_albedo,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_pre_warp_albedo_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     pre_warp_normal,
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_pre_warped_normal_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     torch.abs(pre_warp_albedo - mask_albedo),
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_sub_albedo_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
-                # save_image(
-                #     torch.abs(pre_warp_normal - mask_normal),
-                #     fp=os.path.join(self.path_save_plots,
-                #                     'prediction_sub_normal_{}_{}.exr'.format(epoch,index_sequence)),
-                #     format='exr',
-                #     nrow=self.validation_dataloader.dataset.number_of_frames)
         print(f"{pre_scene} Epoch {epoch}, PSNR: {psnr_sum / num:.4f}, SSIM: {ssim_sum / num:.4f}, LPIPS: {lpips_sum.item() / num:.4f}")
         print(f"{pre_scene} Epoch {epoch}, CUR_CROPPED_PSNR: {cropped_psnr_sum / num:.4f}, CUR_CROPPED_SSIM: {cropped_ssim_sum / num:.4f}, CUR_CROPPED_LPIPS: {cropped_lpips_sum.item() / num:.4f}")
         with open(os.path.join(self.path_save_models, "valid_data.txt"), "a") as f:

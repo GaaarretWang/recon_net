@@ -19,8 +19,8 @@ parser.add_argument("--inference_data", default="./REDS/val/val_sharp", type=str
                     help="Path to inference data to be loaded.")
 parser.add_argument("--data_parallel", default=False, action="store_true",
                     help="Binary flag. If multi GPU training should be utilized set flag.")
-# parser.add_argument("--load_model", default="", type=str,
-parser.add_argument("--load_model", default="./saved_data/generator_network_model_59.pt", type=str,
+parser.add_argument("--load_model", default="", type=str,
+# parser.add_argument("--load_model", default="./saved_data/generator_network_model_59.pt", type=str,
 # parser.add_argument("--load_model", default="./saved_data/tmp.pt", type=str,
                     help="Path to model to be loaded.")
 # the number of input features.
@@ -69,12 +69,14 @@ import misc
 from ranger import Ranger
 from l1loss import L1Loss
 from lpips_pytorch import LPIPS
+from pwc_net import PWCNet
+from resample.resample2d import Resample2d
 
 if __name__ == '__main__':
     epochs = 60
     width = 2560
     height = 1440
-    batch_size = 3
+    batch_size = 1
     # Init networks
     generator_network = nn.DataParallel(RecurrentUNet1().cuda())
     if args.load_model != "":
@@ -87,6 +89,8 @@ if __name__ == '__main__':
         net_type='vgg',  # choose a network type from ['alex', 'squeeze', 'vgg']
         version='0.1'  # Currently, v0.1 is supported
     ).cuda())
+    pwc_net = nn.DataParallel(PWCNet().cuda())
+    resample = nn.DataParallel(Resample2d().cuda())
 
     print("2222")
 
@@ -102,9 +106,8 @@ if __name__ == '__main__':
     # Init model wrapper
     print("3333")
     model_wrapper = ModelWrapper(generator_network=generator_network,
-                                 # Dmv_network=Dmv_network,
-                                 # Tmv_network=Tmv_network,
-                                #  vgg_19=vgg_19,
+                                 pwc_net=pwc_net,
+                                 resample=resample,
                                  L1Loss = L1Loss,
                                  lpips = lpips,
                                  generator_network_optimizer=generator_network_optimizer,
@@ -116,19 +119,19 @@ if __name__ == '__main__':
                                     # Bistro_faster1 Square_fast
                                     #  REDSFovea(path='./pica/train/train_sharp', batch_size=1,
                                     #  REDSFovea(path='../Bistro_low/train', batch_size=1,
-                                     REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_pred/valid'),
-                                               batch_size=batch_size, shuffle=True, num_workers=10),  # b=2
+                                     REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_conti_pred/train'),
+                                               batch_size=batch_size, shuffle=False, num_workers=2),  # b=2
                                 #  validation_dataloader=None, 
                                  validation_dataloader=DataLoader(
                                     #  REDSFovea(path='./pica/val/val_sharp', batch_size=1,
                                     #  REDSFovea(path='../Bistro_low/valid', batch_size=1,
-                                     REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_label/full_valid'),
-                                               batch_size=1, shuffle=False,num_workers=10),
+                                     REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_conti_cur/valid'),
+                                               batch_size=1, shuffle=False,num_workers=2),
                                  validation_dataloader_1=DataLoader(
                                     #  REDSFovea(path='./pica/val/val_sharp', batch_size=1,
                                     #  REDSFovea(path='../Bistro_low/valid', batch_size=1,
-                                     REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_pred/valid'),
-                                               batch_size=1, shuffle=False,num_workers=10),
+                                     REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_conti_pred/valid'),
+                                               batch_size=1, shuffle=False,num_workers=2),
                                  test_dataloader=None, 
                                 #  test_dataloader=DataLoader(
                                 #     #  REDSFovea(path='./pica/val/val_sharp', batch_size=1,
