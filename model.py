@@ -72,7 +72,7 @@ class RecurrentUNet1(nn.Module):
 
         # self.allOne_low = torch.ones(1, 1, heihgt, 480).to(device)
 
-    def forward(self, projected_color, cur_color, projected_sample_time, cur_sample_time):  # 1 24 192 256
+    def forward(self, projected_color, cur_color, projected_sample_time, cur_sample_time, pre_prediction):  # 1 24 192 256
         """
         Forward pass
         :param input: (torch.Tensor) Input frame
@@ -96,7 +96,7 @@ class RecurrentUNet1(nn.Module):
         # offset = self.gen_offset(torch.cat((sample_time_input, grid_sub, albedo, normal, label_albedo, label_normal), dim=1))
         # result = self.pre_warp_conv(torch.cat((projected_color, cur_color, projected_sample_time, cur_sample_time), dim=1))
         result = self.pre_warp_conv_cur(torch.cat((cur_color, cur_sample_time), dim=1))
-        result = self.pre_warp_conv(torch.cat((projected_color, result, projected_sample_time), dim=1))
+        result = self.pre_warp_conv(torch.cat((projected_color, result, projected_sample_time, pre_prediction), dim=1))
 
         # recon5 = torch.ones_like(decode5_color)
         # recon6 = torch.ones_like(decode6_color)
@@ -127,7 +127,7 @@ class Pre_Warp_RecurrentUNet(nn.Module):
     """  
 
     def __init__(self,  
-                 input_channels=7,  
+                 input_channels=10,  
                  label_channels=3,  
                  base_channels=16,  
                  encoder_channels=(12, 18, 36, 48, 60),  

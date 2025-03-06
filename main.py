@@ -120,7 +120,7 @@ if __name__ == '__main__':
                                     #  REDSFovea(path='./pica/train/train_sharp', batch_size=1,
                                     #  REDSFovea(path='../Bistro_low/train', batch_size=1,
                                      REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_conti_pred/train'),
-                                               batch_size=batch_size, shuffle=False, num_workers=2),  # b=2
+                                               batch_size=batch_size, shuffle=False, num_workers=4),  # b=2
                                 #  validation_dataloader=None, 
                                  validation_dataloader=DataLoader(
                                     #  REDSFovea(path='./pica/val/val_sharp', batch_size=1,

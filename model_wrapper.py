@@ -240,6 +240,7 @@ class ModelWrapper(object):
             prediction_sequence = []
             prediction_sequence_length = 4
             conti_dataset_length = 20
+
             # prevResult = None
             # pre_ref = None
             for index_sequence, batch in enumerate(self.training_dataloader):  # 遍历每个序列
@@ -252,12 +253,16 @@ class ModelWrapper(object):
                 if index_sequence % conti_dataset_length == 0:
                     random_x = random.randint(0, self.width - crop_size)
                     random_y = random.randint(0, self.height - crop_size)
+                    pre_prediction = label_image.to(self.device)[:, :, random_y:random_y+crop_size, random_x:random_x+crop_size]
+                    # pre_prediction = torch.zeros([1, 3, crop_size, crop_size]).to('cuda')
+
                 projected_color = projected_color.to(self.device)[:, :, random_y:random_y+crop_size, random_x:random_x+crop_size]
                 cur_color = cur_color.to(self.device)[:, :, random_y:random_y+crop_size, random_x:random_x+crop_size]
                 projected_sample_time = projected_sample_time.to(self.device)[:, :, random_y:random_y+crop_size, random_x:random_x+crop_size]
                 cur_sample_time = cur_sample_time.to(self.device)[:, :, random_y:random_y+crop_size, random_x:random_x+crop_size]
                 label_image = label_image.to(self.device)[:, :, random_y:random_y+crop_size, random_x:random_x+crop_size]
                 gaze_point = gaze_point.to(self.device)
+                    
 
                 # Reset gradients of networks
                 self.generator_network.zero_grad()
@@ -272,7 +277,7 @@ class ModelWrapper(object):
                 # Make prediction
                 all_fovea_masks = get_center_mask(gaze_point, [self.width, self.height])[:, :, random_y:random_y+crop_size, random_x:random_x+crop_size]
                 # all_fovea_masks = torch.ones(all_fovea_masks.shape).to('cuda')  
-                prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time)  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
+                prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time, pre_prediction.detach())  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
                 prediction_sequence.append(prediction_image)
 
                 loss_spatial = self.L1Loss(prediction_image, label_image) / 6
@@ -449,9 +454,11 @@ class ModelWrapper(object):
                 cropped_ssim_sum = 0
                 cropped_lpips_sum = 0
                 num = 0
+                pre_prediction = label_image
 
             # Make prediction
-            prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time)  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
+            prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time, pre_prediction.detach())  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
+            pre_prediction = prediction_image
 
             ssim_sum += ssim(prediction_image, label_image)
             psnr_sum += psnr(prediction_image, label_image)
@@ -551,9 +558,11 @@ class ModelWrapper(object):
                 cropped_ssim_sum = 0
                 cropped_lpips_sum = 0
                 num = 0
-
+                pre_prediction = label_image
+                
             # Make prediction
-            prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time)  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
+            prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time, pre_prediction.detach())  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
+            pre_prediction = prediction_image
 
             ssim_sum += ssim(prediction_image, label_image)
             psnr_sum += psnr(prediction_image, label_image)
