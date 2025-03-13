@@ -8,7 +8,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import deform_conv2d_onnx_exporter
 
-from model_pconv import RecurrentUNet1
+from model import RecurrentUNet1
 # from model import NSRRModel
 from torchvision.ops.deform_conv import DeformConv2d
 
@@ -163,6 +163,7 @@ dummy_input =(
     # torch.randn((1,3,1440,2560)).cuda(),
     torch.randn((1,3,1440,2560)).cuda(),
     torch.randn((1,3,1440,2560)).cuda(),
+    torch.randn((1,1,1440,2560)).cuda(),
     torch.randn((1,1,1440,2560)).cuda(),
     torch.randn((1,1,1440,2560)).cuda(),
 )

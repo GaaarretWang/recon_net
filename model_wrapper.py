@@ -25,6 +25,7 @@ from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMe
 from torchvision.utils import draw_bounding_boxes
 from numba import cuda
 from numba import njit
+import copy
 
 from warpFunctions import pre_process, warp
 from masks import get_center_mask, AngularCoord2ScreenCoord
@@ -229,9 +230,10 @@ class ModelWrapper(object):
         epochs表示训练的轮数，len(self.training_dataloader.dataset)表示训练集的数据量。如80张exr，6个为1个data，共15个
         在每次迭代时，tqdm会自动更新进度条的进度并显示当前训练的状态。
         '''
-        self.notnan_generatornetwork = self.generator_network
-        self.notnan_optimizer = self.generator_network_optimizer
-        crop_size = 1024
+        # self.notnan_generatornetwork = copy.deepcopy(self.generator_network)
+        # self.notnan_optimizer = copy.deepcopy(self.generator_network_optimizer)
+        crop_size = 960
+        # pre_prediction = torch.zeros([1, 3, crop_size, crop_size]).to('cuda')
         # Main loop
         for epoch in range(epochs):
             global global_epoch
@@ -250,10 +252,10 @@ class ModelWrapper(object):
                 '''
                 # input, label, label_mv = batch  # input：img albedo normal depth mv,label:img
                 projected_color, cur_color, projected_sample_time, cur_sample_time, label_image, gaze_point, scene_name = batch
-                if index_sequence % conti_dataset_length == 0:
+                if index_sequence % prediction_sequence_length == 0:
                     random_x = random.randint(0, self.width - crop_size)
                     random_y = random.randint(0, self.height - crop_size)
-                    pre_prediction = label_image.to(self.device)[:, :, random_y:random_y+crop_size, random_x:random_x+crop_size]
+                    # pre_prediction = torch.zeros([1, 3, crop_size, crop_size]).to('cuda')
                     # pre_prediction = torch.zeros([1, 3, crop_size, crop_size]).to('cuda')
 
                 projected_color = projected_color.to(self.device)[:, :, random_y:random_y+crop_size, random_x:random_x+crop_size]
@@ -277,18 +279,15 @@ class ModelWrapper(object):
                 # Make prediction
                 all_fovea_masks = get_center_mask(gaze_point, [self.width, self.height])[:, :, random_y:random_y+crop_size, random_x:random_x+crop_size]
                 # all_fovea_masks = torch.ones(all_fovea_masks.shape).to('cuda')  
-                prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time, pre_prediction.detach())  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
+                prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time, None)  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
+                prediction_image = torch.min(prediction_image, torch.tensor(33e37).to(prediction_image))
                 prediction_sequence.append(prediction_image)
+                # pre_prediction = prediction_image.detach()
 
                 loss_spatial = self.L1Loss(prediction_image, label_image) / 6
                 loss_ssim_fovea = torch.mean(all_fovea_masks) - pytorch_ssim.ssim(prediction_image, label_image, all_fovea_masks)
                 loss_ssim = 1 - pytorch_ssim.ssim(prediction_image, label_image, self.all_one)
                 loss_lpips = self.lpips(prediction_image, label_image, all_fovea_masks)
-
-                downsampled_prediction_image = F.avg_pool2d(prediction_image, kernel_size=8, stride=8)  
-                downsampled_label_image = F.avg_pool2d(label_image, kernel_size=8, stride=8)  
-
-                loss_shadow = torch.mean((downsampled_prediction_image + 0.01) / (downsampled_label_image + 0.01) - 1) ** 2
 
                 if len(prediction_sequence) >= prediction_sequence_length:
                     prediction_reshaped_4d = torch.cat(prediction_sequence, dim=0)
@@ -301,35 +300,41 @@ class ModelWrapper(object):
                         resampled_images = self.resample(prediction_reshaped_4d[1:], flow)
                     # Calc flow loss
                     loss_flow = self.L1Loss(prediction_reshaped_4d[:-1], resampled_images)
+                    all_loss = (loss_spatial  + loss_ssim * 2 + loss_lpips + loss_flow)#L1+VGG
+                else:
+                    all_loss = (loss_spatial  + loss_ssim * 2 + loss_lpips)#L1+VGG
+
+                all_loss.backward(retain_graph=True)
+                torch.nn.utils.clip_grad_norm_(self.generator_network.parameters(), max_norm=0.16)
+                self.generator_network_optimizer.step()
+                # if torch.isnan(all_loss):
+                #     self.generator_network = copy.deepcopy(self.notnan_generatornetwork)
+                #     self.generator_network_optimizer = copy.deepcopy(self.notnan_optimizer)
+                # elif index_sequence % 20 == 0:
+                #     self.notnan_generatornetwork = copy.deepcopy(self.generator_network)
+                #     self.notnan_optimizer = copy.deepcopy(self.generator_network_optimizer)
+
+                if len(prediction_sequence) >= prediction_sequence_length:
                     prediction_sequence = []
-                    all_loss = (loss_spatial  + loss_ssim * 2 + loss_lpips + loss_shadow + loss_flow)#L1+VGG
-                    all_loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.generator_network.parameters(), max_norm=0.16)
-                    # Optimize generator
-                    self.generator_network_optimizer.step()
                     self.progress_bar.set_description(
-                        'L1 Loss={:.3f}, ssim Loss={:.3f}, ssim Loss fovea={:.3f}, shaodw_loss={:.3f}, flow_loss={:.3f}, all Loss={:.3f}'
+                        'L1 Loss={:.3f}, ssim Loss={:.3f}, ssim Loss fovea={:.3f}, flow_loss={:.3f}, all Loss={:.3f}'
                         # 'L1 Loss={:.3f}, ssim Loss={:.3f}, T Loss = {:.3f} , all Loss={:.3f}'
                         .format(loss_spatial.item(),
                                 loss_ssim.item(),
                                 loss_ssim_fovea.item(),
-                                loss_shadow.item(),
                                 loss_flow.item(),
                                 all_loss.item()))
                 else:
-                    all_loss = (loss_spatial  + loss_ssim * 2 + loss_lpips + loss_shadow)#L1+VGG
-                    all_loss.backward(retain_graph=True)
-                    torch.nn.utils.clip_grad_norm_(self.generator_network.parameters(), max_norm=0.16)
-                    # Optimize generator
-                    self.generator_network_optimizer.step()
                     self.progress_bar.set_description(
-                        'L1 Loss={:.3f}, ssim Loss={:.3f}, ssim Loss fovea={:.3f}, shaodw_loss={:.3f}, all Loss={:.3f}'
+                        'L1 Loss={:.3f}, ssim Loss={:.3f}, ssim Loss fovea={:.3f}, all Loss={:.3f}'
                         # 'L1 Loss={:.3f}, ssim Loss={:.3f}, T Loss = {:.3f} , all Loss={:.3f}'
                         .format(loss_spatial.item(),
                                 loss_ssim.item(),
                                 loss_ssim_fovea.item(),
-                                loss_shadow.item(),
                                 all_loss.item()))
+
+
+
                 self.progress_bar.update(n=gaze_point.shape[0])
 
                 # if index_sequence == 0:
@@ -454,11 +459,11 @@ class ModelWrapper(object):
                 cropped_ssim_sum = 0
                 cropped_lpips_sum = 0
                 num = 0
-                pre_prediction = label_image
+                # pre_prediction = label_image
 
             # Make prediction
-            prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time, pre_prediction.detach())  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
-            pre_prediction = prediction_image
+            prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time, None)  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
+            # pre_prediction = prediction_image
 
             ssim_sum += ssim(prediction_image, label_image)
             psnr_sum += psnr(prediction_image, label_image)
@@ -558,11 +563,11 @@ class ModelWrapper(object):
                 cropped_ssim_sum = 0
                 cropped_lpips_sum = 0
                 num = 0
-                pre_prediction = label_image
-                
+                # pre_prediction = label_image
+
             # Make prediction
-            prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time, pre_prediction.detach())  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
-            pre_prediction = prediction_image
+            prediction_image = self.generator_network(projected_color, cur_color, projected_sample_time, cur_sample_time, None)  # b c h w=1,18,h,w  1,6,h,w#generator要改channel
+            # pre_prediction = prediction_image
 
             ssim_sum += ssim(prediction_image, label_image)
             psnr_sum += psnr(prediction_image, label_image)

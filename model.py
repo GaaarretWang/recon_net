@@ -96,7 +96,7 @@ class RecurrentUNet1(nn.Module):
         # offset = self.gen_offset(torch.cat((sample_time_input, grid_sub, albedo, normal, label_albedo, label_normal), dim=1))
         # result = self.pre_warp_conv(torch.cat((projected_color, cur_color, projected_sample_time, cur_sample_time), dim=1))
         result = self.pre_warp_conv_cur(torch.cat((cur_color, cur_sample_time), dim=1))
-        result = self.pre_warp_conv(torch.cat((projected_color, result, projected_sample_time, pre_prediction), dim=1))
+        result = self.pre_warp_conv(torch.cat((projected_color, result, projected_sample_time), dim=1))
 
         # recon5 = torch.ones_like(decode5_color)
         # recon6 = torch.ones_like(decode6_color)
@@ -127,12 +127,12 @@ class Pre_Warp_RecurrentUNet(nn.Module):
     """  
 
     def __init__(self,  
-                 input_channels=10,  
+                 input_channels=7,  
                  label_channels=3,  
                  base_channels=16,  
-                 encoder_channels=(12, 18, 36, 48, 60),  
+                 encoder_channels=(12, 24, 48, 60, 60),  
                  unshuffle_channels=(12, 18, 36, 48),  
-                 decoder_channels=(48, 36, 18, 12),  
+                 decoder_channels=(48, 24, 12, 12),  
                  kernel_size=3):  
         """  
         Constructor method.  
@@ -187,7 +187,7 @@ class Pre_Warp_RecurrentUNet(nn.Module):
         # Decoder blocks  
         self.upconv4 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)  
         self.decoder4 = nn.Sequential(  
-            nn.Conv2d(encoder_channels[4] + encoder_channels[3], decoder_channels[0], kernel_size=kernel_size, padding=1),  
+            nn.Conv2d(encoder_channels[4], decoder_channels[0], kernel_size=kernel_size, padding=1),  
             nn.ReLU(inplace=True),  
             nn.Conv2d(decoder_channels[0], decoder_channels[0], kernel_size=kernel_size, padding=1),  
             nn.ELU(inplace=True),  
@@ -195,7 +195,7 @@ class Pre_Warp_RecurrentUNet(nn.Module):
 
         self.upconv3 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)  
         self.decoder3 = nn.Sequential(  
-            nn.Conv2d(decoder_channels[0] + encoder_channels[2], decoder_channels[1], kernel_size=kernel_size, padding=1),  
+            nn.Conv2d(decoder_channels[0], decoder_channels[1], kernel_size=kernel_size, padding=1),  
             nn.ReLU(inplace=True),  
             nn.Conv2d(decoder_channels[1], decoder_channels[1] + 9, kernel_size=kernel_size, padding=1),  
             nn.ELU(inplace=True),  
@@ -203,15 +203,15 @@ class Pre_Warp_RecurrentUNet(nn.Module):
 
         self.upconv2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)  
         self.decoder2 = nn.Sequential(  
-            nn.Conv2d(decoder_channels[1] + encoder_channels[1], decoder_channels[2], kernel_size=kernel_size, padding=1),  
+            nn.Conv2d(decoder_channels[1], decoder_channels[2], kernel_size=kernel_size, padding=1),  
             nn.ReLU(inplace=True),  
-            nn.Conv2d(decoder_channels[2], decoder_channels[2], kernel_size=kernel_size, padding=1),  
+            nn.Conv2d(decoder_channels[2], decoder_channels[2] + 9, kernel_size=kernel_size, padding=1),  
             nn.ELU(inplace=True),  
         )  
 
         self.upconv1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)  
         self.decoder1 = nn.Sequential(  
-            nn.Conv2d(decoder_channels[2] - 9 + 7, decoder_channels[3], kernel_size=kernel_size, padding=1),  
+            nn.Conv2d(decoder_channels[2], decoder_channels[3], kernel_size=kernel_size, padding=1),  
             nn.ReLU(inplace=True),  
             nn.Conv2d(decoder_channels[3], decoder_channels[3], kernel_size=kernel_size, padding=1),  
             nn.ELU(inplace=True),  
@@ -247,10 +247,10 @@ class Pre_Warp_RecurrentUNet(nn.Module):
 
         # Decoder blocks  
         up4 = self.upconv4(bottleneck)  
-        decode4_output = self.decoder4(torch.cat((up4, down4), dim=1))  
+        decode4_output = self.decoder4(up4 + down4)  
 
         up3 = self.upconv3(decode4_output)  
-        decode5_output = self.decoder3(torch.cat((up3, down3), dim=1))  
+        decode5_output = self.decoder3(up3 + down3)  
         decode5_kernel = decode5_output.clone()  
         batch_size, num_channels, height, width = decode5_kernel.size()  
 
@@ -260,7 +260,7 @@ class Pre_Warp_RecurrentUNet(nn.Module):
             decode5_kernel[:, i:i+1, :, :] = self.kernel_pred1(decode5_output[:, i:i+1, :, :], core5, bias5)  
 
         up2 = self.upconv2(decode5_kernel[:, :-9, :, :])  
-        decode6_output = self.decoder2(torch.cat((up2, down2), dim=1))  
+        decode6_output = self.decoder2(up2 + down2) 
         decode6_kernel = decode6_output.clone()  
         batch_size, num_channels, height, width = decode6_kernel.size()  
 
@@ -270,8 +270,7 @@ class Pre_Warp_RecurrentUNet(nn.Module):
             decode6_kernel[:, i:i+1, :, :] = self.kernel_pred1(decode6_output[:, i:i+1, :, :], core6, bias6)  
 
         up1 = self.upconv1(decode6_kernel[:, :-9, :, :])  
-        decode7_input = torch.cat((down1[:, :7, :, :], up1), dim=1)  
-        decode7_output = self.decoder1(decode7_input)  
+        decode7_output = self.decoder1(down1 + up1)  
         decode7_kernel = decode7_output.clone()  
         batch_size, num_channels, height, width = decode7_kernel.size()  
 

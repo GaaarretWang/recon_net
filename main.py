@@ -126,7 +126,7 @@ if __name__ == '__main__':
                                     #  REDSFovea(path='./pica/val/val_sharp', batch_size=1,
                                     #  REDSFovea(path='../Bistro_low/valid', batch_size=1,
                                      REDSFovea(path='/home/wgy/files/DGaze_and_Recon/new_image_test/image/Dataset_DGaze_ET_conti_cur/valid'),
-                                               batch_size=1, shuffle=False,num_workers=2),
+                                               batch_size=1, shuffle=False,num_workers=4),
                                  validation_dataloader_1=DataLoader(
                                     #  REDSFovea(path='./pica/val/val_sharp', batch_size=1,
                                     #  REDSFovea(path='../Bistro_low/valid', batch_size=1,
